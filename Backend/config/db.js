@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 
 const connectDB = async () => {
   try {
-    let DB = process.env.MONGODB_URI;
+    let DB = process.env.MONGO_URI;
 
     // Only replace if password exists
     if (process.env.DATABASE_PASSWORD) {
