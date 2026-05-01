@@ -1,6 +1,10 @@
 const express = require("express");
 const router = express.Router();
 const Income = require("../models/Income");
+const { protect } = require("../middleware/authMiddleware"); // 👈 NEW
+
+// All income routes are protected — user must be logged in
+router.use(protect); // 👈 applies to every route below
 
 // GET ALL INCOME
 router.get("/", async (req, res) => {
@@ -44,8 +48,7 @@ router.put("/:id", async (req, res) => {
       req.body,
       { new: true, runValidators: true }
     );
-    if (!updated)
-      return res.status(404).json({ message: "Income not found" });
+    if (!updated) return res.status(404).json({ message: "Income not found" });
     res.json(updated);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -56,8 +59,7 @@ router.put("/:id", async (req, res) => {
 router.delete("/:id", async (req, res) => {
   try {
     const deleted = await Income.findByIdAndDelete(req.params.id);
-    if (!deleted)
-      return res.status(404).json({ message: "Income not found" });
+    if (!deleted) return res.status(404).json({ message: "Income not found" });
     res.json({ message: "Income deleted" });
   } catch (err) {
     res.status(500).json({ message: err.message });

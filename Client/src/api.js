@@ -1,58 +1,57 @@
-import axios from 'axios';
+// ── api.js ────────────────────────────────────────────────────────────────────
+const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api/v2";
 
-const BASE_URL = import.meta.env.VITE_API_URL;
+// Grab token from localStorage
+const getToken = () => localStorage.getItem("et_token");
 
-const api = axios.create({ baseURL: BASE_URL, timeout: 15000 });
+// Central fetch wrapper — attaches Bearer token to every request
+const apiFetch = async (path, options = {}) => {
+  const token = getToken();
 
-// ------------------ EXPENSE APIS ------------------
-// Expense backend wraps responses: { success, data: ... }
+  const res = await fetch(`${BASE}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
 
-export const fetchExpenses = async () => {
-  const res = await api.get("/expense");
-  // Returns: { success: true, count: N, data: [...] }
-  return res.data?.data ?? [];
+  // Token expired / invalid → clear token and reload to show login screen
+  if (res.status === 401) {
+    localStorage.removeItem("et_token");
+    window.location.href = "/"; // ✅ reload root — AuthGate shows login
+    throw new Error("Session expired. Please log in again.");
+  }
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || "API error");
+  return data.data || data;
 };
 
-export const createExpense = async (payload) => {
-  const res = await api.post("/expense", payload);
-  // Returns: { success: true, data: { ...expense } }
-  return res.data?.data ?? null;
-};
+// ── EXPENSES ──────────────────────────────────────────────────────────────────
+export const fetchExpenses  = ()         => apiFetch("/expense");
+export const createExpense  = (data)     => apiFetch("/expense",      { method: "POST",   body: JSON.stringify(data) });
+export const updateExpense  = (id, data) => apiFetch(`/expense/${id}`,{ method: "PUT",    body: JSON.stringify(data) });
+export const deleteExpense  = (id)       => apiFetch(`/expense/${id}`,{ method: "DELETE" });
 
-export const updateExpense = async (id, payload) => {
-  const res = await api.put(`/expense/${id}`, payload);
-  // Returns: { success: true, data: { ...expense } }
-  return res.data?.data ?? null;
-};
+// ── INCOME ────────────────────────────────────────────────────────────────────
+export const fetchIncome    = ()         => apiFetch("/income");
+export const createIncome   = (data)     => apiFetch("/income",       { method: "POST",   body: JSON.stringify(data) });
+export const updateIncome   = (id, data) => apiFetch(`/income/${id}`, { method: "PUT",    body: JSON.stringify(data) });
+export const deleteIncome   = (id)       => apiFetch(`/income/${id}`, { method: "DELETE" });
 
-export const deleteExpense = async (id) => {
-  await api.delete(`/expense/${id}`);
-  // Returns: { success: true, message: "Deleted Successfully" }
-  return true;
-};
+// ── AUTH (public endpoints — no token needed) ─────────────────────────────────
+export const forgotPasswordApi = (email) =>
+  fetch(`${BASE}/auth/forgot-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  }).then((r) => r.json());
 
-// ------------------ INCOME APIS ------------------
-// Income backend returns objects directly (no wrapper)
-
-export const fetchIncome = async () => {
-  const res = await api.get("/income");
-  // Returns: [ {...}, {...} ]
-  return Array.isArray(res.data) ? res.data : [];
-};
-
-export const createIncome = async (payload) => {
-  const res = await api.post("/income", payload);
-  // Returns: { ...income }
-  return res.data ?? null;
-};
-
-export const updateIncome = async (id, payload) => {
-  const res = await api.put(`/income/${id}`, payload);
-  // Returns: { ...income }
-  return res.data ?? null;
-};
-
-export const deleteIncome = async (id) => {
-  await api.delete(`/income/${id}`);
-  return true;
-};
+export const resetPasswordApi = (token, password) =>
+  fetch(`${BASE}/auth/reset-password/${token}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  }).then((r) => r.json());

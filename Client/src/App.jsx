@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import { Plus, Moon, Sun } from "lucide-react";
+import React, { useEffect, useState, useCallback } from "react";
+import { Plus, Moon, Sun, LogOut } from "lucide-react";
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 
@@ -9,6 +9,10 @@ import TransactionList from "./components/TransactionList";
 import Model from "./components/Model";
 import StatCard from "./components/StatCard";
 import Sidebar from "./components/Sidebar";
+import ConfirmDialog from "./components/ConfirmDialog";
+
+import { AuthProvider, useAuth } from "./context/AuthContext";
+import { Login, Register, ResetPassword } from "./pages/AuthPages";
 
 import {
   fetchExpenses,
@@ -40,8 +44,6 @@ const CURRENCIES = [
 ];
 
 // ── DATE HELPER ───────────────────────────────────────────────────────────────
-// Converts any date string/object → YYYY-MM-DD using LOCAL time
-// Prevents the UTC midnight → day-before shift in EAT (UTC+3) and other timezones
 const formatDate = (rawDate) => {
   const d = new Date(rawDate);
   const year  = d.getFullYear();
@@ -50,7 +52,56 @@ const formatDate = (rawDate) => {
   return `${year}-${month}-${day}`;
 };
 
-function App() {
+// ── NORMALIZE ─────────────────────────────────────────────────────────────────
+const normalize = (e, type = "expense") => ({
+  _id: e._id,
+  description: e.description || e.source || e.name || "No description",
+  amount: Number(e.amount || 0),
+  category: (e.category || "Other").trim(),
+  date: e.date ? formatDate(e.date) : "",
+  type,
+});
+
+// ── DETECT RESET TOKEN FROM URL ───────────────────────────────────────────────
+// Reads /reset-password/TOKEN from the browser URL without React Router
+const getResetToken = () => {
+  const path = window.location.pathname;
+  const match = path.match(/^\/reset-password\/(.+)$/);
+  return match ? match[1] : null;
+};
+
+// ── AUTH GATE ─────────────────────────────────────────────────────────────────
+const AuthGate = ({ children, darkMode }) => {
+  const { user, loading } = useAuth();
+  const [showLogin, setShowLogin] = useState(true);
+
+  // Check if URL is a reset password link
+  const resetToken = getResetToken();
+  if (resetToken) {
+    return <ResetPassword darkMode={darkMode} token={resetToken} />;
+  }
+
+  if (loading) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center ${darkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
+        <p className="text-sm opacity-60">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return showLogin
+      ? <Login darkMode={darkMode} onSwitch={() => setShowLogin(false)} />
+      : <Register darkMode={darkMode} onSwitch={() => setShowLogin(true)} />;
+  }
+
+  return children;
+};
+
+// ── MAIN APP ──────────────────────────────────────────────────────────────────
+function AppInner() {
+  const { user, logout } = useAuth();
+
   const [expenses, setExpenses]             = useState([]);
   const [incomeList, setIncomeList]         = useState([]);
   const [isModelOpen, setModelOpen]         = useState(false);
@@ -58,26 +109,14 @@ function App() {
   const [darkMode, setDarkMode]             = useState(false);
   const [activePage, setActivePage]         = useState("Dashboard");
   const [currency, setCurrency]             = useState(CURRENCIES[0]);
+  const [logoutDialogOpen, setLogoutDialogOpen] = useState(false);
 
-  // ── NORMALIZE ───────────────────────────────────────────────────────────────
-  // Handles both Income (source field) and Expense (description field) shapes
-  const normalize = (e, type = "expense") => ({
-    _id: e._id,
-    description: e.description || e.source || e.name || "No description",
-    amount: Number(e.amount || 0),
-    category: (e.category || "Other").trim(),
-    date: e.date ? formatDate(e.date) : "",
-    type,
-  });
-
-  // ── LOAD DATA ───────────────────────────────────────────────────────────────
+  // ── LOAD DATA ─────────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!user) return;
     const loadData = async () => {
       try {
-        const [expData, incData] = await Promise.all([
-          fetchExpenses(),
-          fetchIncome(),
-        ]);
+        const [expData, incData] = await Promise.all([fetchExpenses(), fetchIncome()]);
         setExpenses(expData.map((e) => normalize(e, "expense")));
         setIncomeList(incData.map((i) => normalize(i, "income")));
       } catch {
@@ -85,9 +124,8 @@ function App() {
       }
     };
     loadData();
-  }, []);
+  }, [user]);
 
-  // ── DERIVED VALUES ──────────────────────────────────────────────────────────
   const totalIncome   = incomeList.reduce((sum, i) => sum + i.amount, 0);
   const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
   const balance       = totalIncome - totalExpenses;
@@ -96,8 +134,7 @@ function App() {
     (a, b) => new Date(b.date) - new Date(a.date)
   );
 
-  // ── ADD ─────────────────────────────────────────────────────────────────────
-  const handleAddTransaction = async (data) => {
+  const handleAddTransaction = useCallback(async (data) => {
     try {
       if (data.type === "income") {
         const saved = await createIncome(data);
@@ -115,31 +152,26 @@ function App() {
       toast.error("Failed to add transaction");
       console.error("handleAddTransaction error:", err);
     }
-  };
+  }, []);
 
-  // ── EDIT ────────────────────────────────────────────────────────────────────
-  const handleEdit = (item) => {
+  const handleEdit = useCallback((item) => {
     setEditingExpense(item);
     setModelOpen(true);
-  };
+  }, []);
 
-  const handleUpdateTransaction = async (data) => {
+  const handleUpdateTransaction = useCallback(async (data) => {
     try {
       if (data.type === "income") {
         const saved = await updateIncome(editingExpense._id, data);
         if (!saved?._id) throw new Error("No data returned from server");
         setIncomeList((prev) =>
-          prev.map((i) =>
-            i._id === editingExpense._id ? normalize(saved, "income") : i
-          )
+          prev.map((i) => i._id === editingExpense._id ? normalize(saved, "income") : i)
         );
       } else {
         const saved = await updateExpense(editingExpense._id, data);
         if (!saved?._id) throw new Error("No data returned from server");
         setExpenses((prev) =>
-          prev.map((e) =>
-            e._id === editingExpense._id ? normalize(saved, "expense") : e
-          )
+          prev.map((e) => e._id === editingExpense._id ? normalize(saved, "expense") : e)
         );
       }
       toast.success("Transaction updated!");
@@ -149,18 +181,13 @@ function App() {
       toast.error("Update failed");
       console.error("handleUpdateTransaction error:", err);
     }
-  };
+  }, [editingExpense]);
 
-  const handleSave = (data) => {
-    if (editingExpense) {
-      handleUpdateTransaction(data);
-    } else {
-      handleAddTransaction(data);
-    }
-  };
+  const handleSave = useCallback((data) => {
+    editingExpense ? handleUpdateTransaction(data) : handleAddTransaction(data);
+  }, [editingExpense, handleUpdateTransaction, handleAddTransaction]);
 
-  // ── DELETE ──────────────────────────────────────────────────────────────────
-  const handleDelete = async (item) => {
+  const handleDelete = useCallback(async (item) => {
     try {
       if (item.type === "income") {
         await deleteIncome(item._id);
@@ -173,244 +200,212 @@ function App() {
     } catch {
       toast.error("Delete failed");
     }
-  };
+  }, []);
 
-  // ── SPARKLINES (last 7 entries each) ────────────────────────────────────────
+  const confirmLogout = useCallback(() => {
+    setLogoutDialogOpen(false);
+    try {
+      logout();
+      toast.success("Signed out successfully");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to sign out");
+    }
+  }, [logout]);
+
   const incomeSparkline  = incomeList.slice(-7).map((i) => i.amount);
   const expenseSparkline = expenses.slice(-7).map((e) => e.amount);
   const balanceSparkline = allTransactions
     .slice(-7)
     .map((t) => (t.type === "income" ? t.amount : -t.amount));
 
-  // ── SHARED STAT CARDS ───────────────────────────────────────────────────────
   const StatCards = () => (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      <StatCard
-        title="Income"
-        value={totalIncome}
-        type="income"
-        darkMode={darkMode}
-        sparkline={incomeSparkline}
-        trend={{ value: 8.2, label: "vs last month" }}
-        prefix={currency.symbol}
-      />
-      <StatCard
-        title="Expenses"
-        value={totalExpenses}
-        type="expense"
-        darkMode={darkMode}
-        sparkline={expenseSparkline}
-        trend={{ value: -3.1, label: "vs last month" }}
-        prefix={currency.symbol}
-      />
-      <StatCard
-        title="Balance"
-        value={balance}
-        type="balance"
-        darkMode={darkMode}
-        sparkline={balanceSparkline}
-        prefix={currency.symbol}
-      />
-      <StatCard
-        title="Transactions"
-        value={allTransactions.length}
-        type="default"
-        darkMode={darkMode}
-        prefix=""
-      />
+      <StatCard title="Income"       value={totalIncome}            type="income"   darkMode={darkMode} sparkline={incomeSparkline}  trend={{ value: 8.2, label: "vs last month" }} prefix={currency.symbol} />
+      <StatCard title="Expenses"     value={totalExpenses}          type="expense"  darkMode={darkMode} sparkline={expenseSparkline} trend={{ value: -3.1, label: "vs last month" }} prefix={currency.symbol} />
+      <StatCard title="Balance"      value={balance}                type="balance"  darkMode={darkMode} sparkline={balanceSparkline} prefix={currency.symbol} />
+      <StatCard title="Transactions" value={allTransactions.length} type="default"  darkMode={darkMode} prefix="" />
     </div>
   );
 
-  // ── RENDER ──────────────────────────────────────────────────────────────────
   return (
-    <div
-      className={`flex min-h-screen ${
-        darkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"
-      }`}
-    >
-      {/* SIDEBAR */}
-      <Sidebar
-        active={activePage}
-        setActive={setActivePage}
-        darkMode={darkMode}
-      />
+    <AuthGate darkMode={darkMode}>
+      <div className={`flex min-h-screen ${darkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
+        <Sidebar active={activePage} setActive={setActivePage} darkMode={darkMode} />
 
-      <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto">
 
-        {/* HEADER */}
-        <div
-          className={`flex justify-between items-center px-6 py-4 border-b sticky top-0 z-10 ${
-            darkMode
-              ? "bg-gray-900 border-gray-700"
-              : "bg-gray-50 border-gray-100"
-          }`}
-        >
-          <h1 className="text-xl font-bold">{activePage}</h1>
-          <div className="flex gap-3 items-center">
-            <button
-              onClick={() => setDarkMode(!darkMode)}
-              className={`p-2 rounded-xl transition ${
-                darkMode
-                  ? "bg-gray-700 hover:bg-gray-600"
-                  : "bg-white hover:bg-gray-100 shadow-sm"
-              }`}
-            >
-              {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-            </button>
-            <button
-              onClick={() => {
-                setEditingExpense(null);
-                setModelOpen(true);
-              }}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium transition"
-            >
-              <Plus className="w-4 h-4" /> Add Transaction
-            </button>
+          {/* HEADER */}
+          <div className={`flex justify-between items-center px-6 py-4 border-b sticky top-0 z-10 ${darkMode ? "bg-gray-900 border-gray-700" : "bg-gray-50 border-gray-100"}`}>
+            <div>
+              <h1 className="text-xl font-bold">{activePage}</h1>
+              <p className={`text-xs mt-0.5 ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                Hello, {user?.name} 👋
+              </p>
+            </div>
+            <div className="flex gap-3 items-center">
+              <button
+                onClick={() => setDarkMode(!darkMode)}
+                className={`p-2 rounded-xl transition ${darkMode ? "bg-gray-700 hover:bg-gray-600" : "bg-white hover:bg-gray-100 shadow-sm"}`}
+              >
+                {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              </button>
+
+              <button
+                onClick={() => setLogoutDialogOpen(true)}
+                className={`p-2 rounded-xl transition ${darkMode ? "bg-gray-700 hover:bg-gray-600" : "bg-white hover:bg-gray-100 shadow-sm"}`}
+                title="Sign out"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+
+              <button
+                onClick={() => { setEditingExpense(null); setModelOpen(true); }}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium transition"
+              >
+                <Plus className="w-4 h-4" /> Add Transaction
+              </button>
+            </div>
           </div>
+
+          {/* DASHBOARD */}
+          {activePage === "Dashboard" && (
+            <div className="p-6 space-y-5">
+              <StatCards />
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <SpendingChart transactions={allTransactions} darkMode={darkMode} />
+                <CategoryChart expenses={allTransactions} darkMode={darkMode} />
+              </div>
+              <TransactionList expenses={allTransactions} onDelete={handleDelete} onEdit={handleEdit} darkMode={darkMode} currency={currency.symbol} />
+            </div>
+          )}
+
+          {/* TRANSACTIONS */}
+          {activePage === "Transactions" && (
+            <div className="p-6">
+              <TransactionList expenses={allTransactions} onDelete={handleDelete} onEdit={handleEdit} darkMode={darkMode} currency={currency.symbol} />
+            </div>
+          )}
+
+          {/* ANALYTICS */}
+          {activePage === "Analytics" && (
+            <div className="p-6 space-y-5">
+              <StatCards />
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <SpendingChart transactions={allTransactions} darkMode={darkMode} />
+                <CategoryChart expenses={allTransactions} darkMode={darkMode} />
+              </div>
+            </div>
+          )}
+
+          {/* SETTINGS */}
+          {activePage === "Settings" && (
+            <div className="p-6">
+              <div className={`rounded-2xl border p-6 space-y-0 overflow-hidden ${darkMode ? "bg-gray-800 border-gray-700" : "bg-white border-gray-100"}`}>
+                <h2 className="text-base font-semibold mb-4">Preferences</h2>
+
+                {/* Account info */}
+                <div className={`flex items-center justify-between py-3 border-b ${darkMode ? "border-gray-700" : "border-gray-100"}`}>
+                  <div>
+                    <p className="text-sm font-medium">{user?.name}</p>
+                    <p className={`text-xs ${darkMode ? "text-gray-400" : "text-gray-500"}`}>{user?.email}</p>
+                  </div>
+                  <button
+                    onClick={() => setLogoutDialogOpen(true)}
+                    className="text-xs text-red-500 hover:text-red-600 hover:underline font-medium transition"
+                  >
+                    Sign out
+                  </button>
+                </div>
+
+                {/* Dark mode toggle */}
+                <div className={`flex items-center justify-between py-3 border-b ${darkMode ? "border-gray-700" : "border-gray-100"}`}>
+                  <div>
+                    <p className="text-sm font-medium">Dark Mode</p>
+                    <p className={`text-xs mt-0.5 ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                      {darkMode ? "On" : "Off"}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setDarkMode(!darkMode)}
+                    className={`flex-shrink-0 w-11 h-6 rounded-full transition-colors relative ${darkMode ? "bg-indigo-600" : "bg-indigo-100"}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform ${
+                        darkMode ? "bg-white translate-x-5" : "bg-indigo-600 translate-x-0"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Currency selector */}
+                <div className="py-3">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm font-medium">Currency</span>
+                    <span className={`text-xs px-2.5 py-1 rounded-lg font-medium ${darkMode ? "bg-indigo-900 text-indigo-300" : "bg-indigo-50 text-indigo-600"}`}>
+                      {currency.symbol} — {currency.code}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {CURRENCIES.map((c) => (
+                      <button
+                        key={c.code}
+                        onClick={() => setCurrency(c)}
+                        className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm transition ${
+                          currency.code === c.code
+                            ? "border-indigo-500 bg-indigo-50 text-indigo-700 font-semibold"
+                            : darkMode
+                            ? "border-gray-600 hover:border-gray-400 text-gray-300"
+                            : "border-gray-200 hover:border-gray-400 text-gray-700"
+                        }`}
+                      >
+                        <span className="w-6 text-center text-base">{c.symbol}</span>
+                        <span className="text-xs">{c.code}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className={`mt-3 text-xs ${darkMode ? "text-gray-500" : "text-gray-400"}`}>
+                    Selected: {currency.label}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* ── DASHBOARD ─────────────────────────────────────────────────────── */}
-        {activePage === "Dashboard" && (
-          <div className="p-6 space-y-5">
-            <StatCards />
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <SpendingChart transactions={allTransactions} darkMode={darkMode} />
-              <CategoryChart expenses={allTransactions} darkMode={darkMode} />
-            </div>
-
-            {/* Recent 5 — full array + limit={5}, no .slice() in parent */}
-            <TransactionList
-              expenses={allTransactions}
-              onDelete={handleDelete}
-              onEdit={handleEdit}
-              darkMode={darkMode}
-              limit={5}
-              currency={currency.symbol}
-            />
-          </div>
+        {isModelOpen && (
+          <Model
+            editingExpense={editingExpense}
+            onClose={() => { setModelOpen(false); setEditingExpense(null); }}
+            onSave={handleSave}
+            darkMode={darkMode}
+          />
         )}
 
-        {/* ── TRANSACTIONS ──────────────────────────────────────────────────── */}
-        {activePage === "Transactions" && (
-          <div className="p-6">
-            {/* No limit → full paginated list */}
-            <TransactionList
-              transactions={allTransactions}
-              onDelete={handleDelete}
-              onEdit={handleEdit}
-              darkMode={darkMode}
-              currency={currency.symbol}
-            />
-          </div>
-        )}
-
-        {/* ── ANALYTICS ─────────────────────────────────────────────────────── */}
-        {activePage === "Analytics" && (
-          <div className="p-6 space-y-5">
-            <StatCards />
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <SpendingChart transactions={allTransactions} darkMode={darkMode} />
-              <CategoryChart expenses={allTransactions} darkMode={darkMode} />
-            </div>
-          </div>
-        )}
-
-        {/* ── SETTINGS ──────────────────────────────────────────────────────── */}
-        {activePage === "Settings" && (
-          <div className="p-6">
-            <div
-              className={`rounded-2xl border p-6 space-y-2 ${
-                darkMode
-                  ? "bg-gray-800 border-gray-700"
-                  : "bg-white border-gray-100"
-              }`}
-            >
-              <h2 className="text-base font-semibold mb-4">Preferences</h2>
-
-              {/* Dark mode toggle */}
-              <div
-                className={`flex items-center justify-between py-3 border-b ${
-                  darkMode ? "border-gray-700" : "border-gray-100"
-                }`}
-              >
-                <span className="text-sm">Dark Mode</span>
-                <button
-                  onClick={() => setDarkMode(!darkMode)}
-                  className={`w-10 h-6 rounded-full transition-colors relative ${
-                    darkMode ? "bg-indigo-600" : "bg-gray-200"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform ${
-                      darkMode ? "translate-x-5" : "translate-x-1"
-                    }`}
-                  />
-                </button>
-              </div>
-
-              {/* Currency selector */}
-              <div className="py-3">
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-sm font-medium">Currency</span>
-                  <span
-                    className={`text-xs px-2.5 py-1 rounded-lg font-medium ${
-                      darkMode
-                        ? "bg-indigo-900 text-indigo-300"
-                        : "bg-indigo-50 text-indigo-600"
-                    }`}
-                  >
-                    {currency.symbol} — {currency.code}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {CURRENCIES.map((c) => (
-                    <button
-                      key={c.code}
-                      onClick={() => setCurrency(c)}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm transition ${
-                        currency.code === c.code
-                          ? "border-indigo-500 bg-indigo-50 text-indigo-700 font-semibold"
-                          : darkMode
-                          ? "border-gray-600 hover:border-gray-400 text-gray-300"
-                          : "border-gray-200 hover:border-gray-400 text-gray-700"
-                      }`}
-                    >
-                      <span className="w-6 text-center text-base">{c.symbol}</span>
-                      <span className="text-xs">{c.code}</span>
-                    </button>
-                  ))}
-                </div>
-
-                <p className={`mt-3 text-xs ${darkMode ? "text-gray-500" : "text-gray-400"}`}>
-                  Selected: {currency.label}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-      </div>
-
-      {/* MODAL */}
-      {isModelOpen && (
-        <Model
-          editingExpense={editingExpense}
-          onClose={() => {
-            setModelOpen(false);
-            setEditingExpense(null);
-          }}
-          onSave={handleSave}
+        <ConfirmDialog
+          isOpen={logoutDialogOpen}
+          onConfirm={confirmLogout}
+          onCancel={() => setLogoutDialogOpen(false)}
           darkMode={darkMode}
+          variant="logout"
+          title="Sign out of your account?"
+          message="You'll need to sign back in to access your transactions and financial data."
+          confirmText="Sign out"
+          cancelText="Stay signed in"
         />
-      )}
 
-      <ToastContainer
-        position="bottom-right"
-        theme={darkMode ? "dark" : "light"}
-      />
-    </div>
+        <ToastContainer position="bottom-right" theme={darkMode ? "dark" : "light"} />
+      </div>
+    </AuthGate>
+  );
+}
+
+// ── ROOT EXPORT ───────────────────────────────────────────────────────────────
+function App() {
+  return (
+    <AuthProvider>
+      <AppInner />
+    </AuthProvider>
   );
 }
 

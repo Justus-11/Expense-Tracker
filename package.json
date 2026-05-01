@@ -11,6 +11,7 @@
     "concurrently": "^8.2.2"
   },
   "dependencies": {
+    "nodemailer": "^8.0.7",
     "react-hot-toast": "^2.6.0"
   }
 }

@@ -1,3 +1,5 @@
+require("dotenv").config(); // 👈 MUST be first
+
 const app = require("./app");
 const mongoose = require("mongoose");
 const connectDB = require("./config/db");
