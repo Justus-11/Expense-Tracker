@@ -67,10 +67,7 @@ function TransactionList({
   const handleTypeFilter = (val) => { setTypeFilter(val); setPage(1); };
   const handleSearch     = (val) => { setSearch(val);     setPage(1); };
 
-  // ── Open the confirm dialog for this item ─────────────────────────────────
   const requestDelete = (item) => setDeleteTarget(item);
-
-  // ── Confirmed: run the actual delete ─────────────────────────────────────
   const confirmDelete = () => {
     if (deleteTarget) onDelete(deleteTarget);
     setDeleteTarget(null);
@@ -90,7 +87,6 @@ function TransactionList({
     return list;
   }, [expenses, dateFilter, search]);
 
-  // Totals always reflect both types regardless of typeFilter
   const totalIncome = useMemo(
     () =>
       baseFiltered
@@ -106,7 +102,6 @@ function TransactionList({
     [baseFiltered]
   );
 
-  // Full filtered list including type filter (case-insensitive)
   const filtered = useMemo(() => {
     if (typeFilter === "all") return baseFiltered;
     return baseFiltered.filter(
@@ -126,6 +121,11 @@ function TransactionList({
   const base = darkMode
     ? "bg-gray-800 text-white border-gray-700"
     : "bg-white text-gray-900 border-gray-100";
+
+  // ── Shared select class ───────────────────────────────────────────────────
+  const selectClass = `outline-none cursor-pointer ${
+    darkMode ? "bg-gray-700 text-white" : "bg-gray-50 text-gray-700"
+  }`;
 
   return (
     <>
@@ -174,7 +174,7 @@ function TransactionList({
               <select
                 value={typeFilter}
                 onChange={(e) => handleTypeFilter(e.target.value)}
-                className="bg-transparent outline-none cursor-pointer"
+                className={selectClass}
               >
                 {TYPE_OPTIONS.map((o) => (
                   <option key={o.value} value={o.value}>{o.label}</option>
@@ -190,7 +190,7 @@ function TransactionList({
               <select
                 value={dateFilter}
                 onChange={(e) => handleDateFilter(e.target.value)}
-                className="bg-transparent outline-none cursor-pointer"
+                className={selectClass}
               >
                 {DATE_OPTIONS.map((o) => (
                   <option key={o.value} value={o.value}>{o.label}</option>
@@ -326,7 +326,7 @@ function TransactionList({
         )}
       </div>
 
-      {/* ── Delete confirmation dialog (rendered outside the card) ── */}
+      {/* ── Delete confirmation dialog ── */}
       <ConfirmDialog
         isOpen={!!deleteTarget}
         onConfirm={confirmDelete}
